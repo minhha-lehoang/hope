@@ -1,0 +1,9 @@
+peft
+transformers
+datasets
+torch
+scikit-learn
+tqdm
+pandas
+matplotlib
+pytrec_eval
