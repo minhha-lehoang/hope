@@ -1,14 +1,16 @@
 import os
 from glob import glob
-import pandas as pd
+
 import numpy as np
+import pandas as pd
 import torch
 from tqdm import tqdm
-from .model import load_checkpoint
 from transformers import AutoTokenizer
 
+from .model import load_checkpoint
 
-def load_data(data_dir):
+
+def load_data(data_dir, id_column="doc_no", text_column="doc_text"):
     """
     Load data from the specified directory.
     Assumes that the directory contains CSV files.
@@ -19,11 +21,13 @@ def load_data(data_dir):
     for file in data_files:
         df = pd.read_csv(file)
         df["file"] = file
-        data.append(df[["doc_no", "doc_text", "file"]])
+        data.append(df[[id_column, text_column, "file"]])
 
     all_df = pd.concat(data, ignore_index=True)
-    all_df = all_df.dropna(subset=["doc_text"])  # Remove NaN text
-    all_df = all_df[all_df["doc_text"].astype(str).str.len() >= 3]  # Ensure string type
+    all_df = all_df.dropna(subset=[text_column])  # Remove NaN text
+    all_df = all_df[
+        all_df[text_column].astype(str).str.len() >= 3
+    ]  # Ensure string type
     return all_df
 
 

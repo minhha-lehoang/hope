@@ -1,6 +1,6 @@
 import torch
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from transformers import AutoModelForSequenceClassification
-from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 

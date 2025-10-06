@@ -1,12 +1,14 @@
 import os
 
-import pandas as pd
 import numpy as np
-from sklearn.metrics import classification_report
+import pandas as pd
 import torch
-from transformers import AutoTokenizer, Trainer, TrainingArguments
 from datasets import Dataset, DatasetDict
+from sklearn.metrics import classification_report
+from transformers import AutoTokenizer, Trainer, TrainingArguments
+
 from extractor.model import get_model
+from utils.constants import PROCESSED_DATA_DIR
 
 SEED = 42
 np.random.seed(SEED)
@@ -15,19 +17,19 @@ torch.cuda.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 
 
-def preprocess(df: pd.DataFrame):
+def preprocess(df: pd.DataFrame, id_column="doc_id", text_column="text"):
     df = df.copy()
-    df = df.set_index("docid")
+    df = df.set_index(id_column)
     df = df.replace(-1, 0)
 
     # label: array of all symptom columns (except text)
-    df["label"] = df.drop(["text"], axis=1).values.tolist()
+    df["label"] = df.drop([text_column], axis=1).values.tolist()
     df["label"] = df["label"].apply(lambda x: [float(val) for val in x])
 
-    return df[["text", "label"]]
+    return df[[text_column, "label"]]
 
 
-def prepare_dataset(data_dir):
+def prepare_dataset(data_dir, id_column="doc_id", text_column="text"):
     data_23 = pd.read_csv(os.path.join(data_dir, "erisk2023_majority.csv"))
     data_24 = pd.read_csv(os.path.join(data_dir, "erisk2024_majority.csv"))
 
@@ -36,8 +38,8 @@ def prepare_dataset(data_dir):
         [data_23, data_24[~data_24["doc_id"].isin(val_df["doc_id"])]]
     ).reset_index(drop=True)
 
-    train_df = preprocess(train_df)
-    val_df = preprocess(val_df)
+    train_df = preprocess(train_df, id_column=id_column, text_column=text_column)
+    val_df = preprocess(val_df, id_column=id_column, text_column=text_column)
 
     dataset = DatasetDict(
         {
@@ -94,17 +96,16 @@ def train_model(model, dataset):
     return trainer
 
 
-def main():
-    data_dir = "data/erisk25-t1-processed"
+def main(data_dir, model_path, text_column="text", id_column="doc_id"):
     model_path = "rafalposwiata/deproberta-large-depression"
 
-    dataset = prepare_dataset(data_dir)
+    dataset = prepare_dataset(data_dir, id_column=id_column, text_column=text_column)
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
     # Tokenize the dataset
     def tokenize_function(examples):
         return tokenizer(
-            examples["text"], truncation=True, padding="max_length", max_length=256
+            examples[text_column], truncation=True, padding="max_length", max_length=256
         )
 
     tokenized_datasets = dataset.map(tokenize_function, batched=True)
@@ -119,4 +120,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(PROCESSED_DATA_DIR)
