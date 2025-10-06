@@ -1,10 +1,10 @@
-import pandas as pd
 import os
+
+import pandas as pd
 from sentence_transformers import SentenceTransformer
-from sklearn.feature_extraction.text import TfidfVectorizer
 
 
-def read_data(data_path):
+def read_data(data_path, text_column="doc_text", id_column="docid"):
     print(f"Reading data from {data_path}")
 
     if os.path.isdir(data_path):
@@ -13,28 +13,23 @@ def read_data(data_path):
             if file.endswith(".csv"):
                 try:
                     df = pd.read_csv(os.path.join(data_path, file))
-                    df = df.dropna(subset=["doc_text"])
-                    df["doc_text"] = df["doc_text"].astype(str)
+                    df = df.dropna(subset=[text_column])
+                    df[text_column] = df[text_column].astype(str)
                     dfs.append(df)
                 except Exception as e:
                     print(f"Error reading file {file}: {e}")
 
         concat_dfs = pd.concat(dfs, ignore_index=True)
-        if "doc_no" in concat_dfs.columns and "docid" not in concat_dfs.columns:
-            concat_dfs["docid"] = concat_dfs["doc_no"]
-            concat_dfs.drop("doc_no", axis=1, inplace=True)
 
     elif data_path.endswith(".csv"):
         concat_dfs = pd.read_csv(data_path)
-        if "text" in concat_dfs.columns and "doc_text" not in concat_dfs.columns:
-            concat_dfs.rename(columns={"text": "doc_text"}, inplace=True)
-        concat_dfs = concat_dfs.dropna(subset=["doc_text"])
-        concat_dfs["doc_text"] = concat_dfs["doc_text"].astype(str)
+        concat_dfs = concat_dfs.dropna(subset=[text_column])
+        concat_dfs[text_column] = concat_dfs[text_column].astype(str)
 
     # drop text with less than 5 characters
-    concat_dfs = concat_dfs[concat_dfs["doc_text"].str.len() >= 5]
+    concat_dfs = concat_dfs[concat_dfs[text_column].str.len() >= 5]
     # drop text that only contains numbers
-    concat_dfs = concat_dfs[~concat_dfs["doc_text"].str.isnumeric()]
+    concat_dfs = concat_dfs[~concat_dfs[text_column].str.isnumeric()]
     return concat_dfs.reset_index(drop=True)
 
 

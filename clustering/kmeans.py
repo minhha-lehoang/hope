@@ -1,12 +1,17 @@
 import os
+
 import numpy as np
 import pandas as pd
-from sentence_transformers import SentenceTransformer
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from peft import PeftModel
 import torch
-from .embedding import read_data
-from utils.constants import CHECKPOINT_PATH, RELEVANT_THRESHOLD
+from peft import PeftModel
+from scipy.spatial.distance import cdist
+from sentence_transformers import SentenceTransformer
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+from data_processing.text_preprocess import sentence_segmentation
+from utils.constants import (CHECKPOINT_PATH, DESCRIPTION_FOLDER,
+                             RELEVANT_THRESHOLD)
+
 
 def load_avg_questionnaire_vectors(description_folder, model):
     """
@@ -34,22 +39,24 @@ def load_depression_model(model_checkpoint):
         - model: A SentenceTransformer-compatible wrapper for the loaded model
     """
     print(f"Loading depression model from checkpoint: {model_checkpoint}")
-    
+
     # Load the base model and tokenizer
-    tokenizer = AutoTokenizer.from_pretrained("rafalposwiata/deproberta-large-depression")
+    tokenizer = AutoTokenizer.from_pretrained(
+        "rafalposwiata/deproberta-large-depression"
+    )
     base_model = AutoModelForSequenceClassification.from_pretrained(
         "rafalposwiata/deproberta-large-depression",
         num_labels=21,
         problem_type="multi_label_classification",
         ignore_mismatched_sizes=True,
     )
-    
+
     # Load the fine-tuned model with PEFT
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = PeftModel.from_pretrained(
         base_model, model_checkpoint, device_map="auto"
     ).to(device)
-    
+
     # Create a wrapper class to make it compatible with SentenceTransformer's encode method
     class ModelWrapper:
         def __init__(self, model, tokenizer, device):
@@ -57,124 +64,193 @@ def load_depression_model(model_checkpoint):
             self.tokenizer = tokenizer
             self.device = device
             self.model.eval()
-        
+
         def encode(self, sentences, batch_size=8, show_progress_bar=False, device=None):
             if device is None:
                 device = self.device
-                
+
             # Handle both single sentence and list of sentences
             if isinstance(sentences, str):
                 sentences = [sentences]
-            
+
             all_embeddings = []
-            
+
             # Process in batches
             for i in range(0, len(sentences), batch_size):
-                batch = sentences[i:i + batch_size]
+                batch = sentences[i : i + batch_size]
                 encoded = self.tokenizer(
-                    batch, 
+                    batch,
                     padding="max_length",
                     truncation=True,
                     max_length=256,
-                    return_tensors="pt"
+                    return_tensors="pt",
                 )
-                
+
                 input_ids = encoded["input_ids"].to(device)
                 attention_mask = encoded["attention_mask"].to(device)
-                
+
                 with torch.no_grad():
-                    outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                    outputs = self.model(
+                        input_ids=input_ids, attention_mask=attention_mask
+                    )
                     # Extract the final hidden state or logits as embeddings
                     # Using the logits as embeddings for simplicity
                     embeddings = outputs.logits.cpu().numpy()
                     all_embeddings.append(embeddings)
-            
+
             # Concatenate all batch embeddings
             all_embeddings = np.vstack(all_embeddings)
             return all_embeddings
-    
+
     # Return wrapped model
     wrapped_model = ModelWrapper(model, tokenizer, device)
     return wrapped_model
+
+
+def kmeans_clustering(embeddings, questionnaire_symptom_vectors, n_clusters=10):
+    from sklearn.cluster import KMeans
+    from sklearn.preprocessing import normalize
+
+    # Normalize for cosine similarity
+    embeddings_norm = normalize(embeddings)
+    centroids_norm = normalize(np.array(questionnaire_symptom_vectors))
+
+    kmeans = KMeans(
+        n_clusters=n_clusters, init=centroids_norm, n_init=1
+    )  # n_init=1 to use provided init
+    kmeans.fit(embeddings_norm)
+    return kmeans.labels_, kmeans.cluster_centers_, embeddings_norm, centroids_norm
 
 
 def find_symptom_sentences(
     data_path,
     description_folder,
     model_path,
-    output_dir,
     topk=1000,
+    rel_thres=RELEVANT_THRESHOLD,
     use_depression_model=False,
-    checkpoint_path=None,
+    checkpoint_path=CHECKPOINT_PATH,
+    output_dir=None,
+    id_column="sentence_id",
+    text_column="text",
 ):
-    """
-    For each symptom, find the topk most similar sentences based on embedding distance
-    to the average of BDI-II questionnaire vectors.
-    """
     # Load data
-    df = read_data(data_path)
-    df = df.rename(columns={"sentence": "doc_text", "doc_id": "docid"}, errors="ignore")
-    print(f"Loaded {len(df)} sentences for symptom mapping.")
+    df = pd.read_csv(data_path)
 
-    # Load model
+    # filter out rows with  no value >= rel_thres
+    pred_cols = [col for col in df.columns if col.startswith("pred_")]
+    df = df[df[pred_cols].gt(rel_thres).any(axis=1)].reset_index(drop=True)
+    print(f"Filtered to {len(df)} texts with rel_thres > {rel_thres}")
+
+    # split doc_text into sentences
+    df["sentence"] = df[text_column].apply(sentence_segmentation)
+    df = df.explode("sentence").reset_index(drop=True)
+    print(f"Exploded to {len(df)} sentences after sentence segmentation")
+
+    # Load model - either depression model or sentence transformer
     if use_depression_model and checkpoint_path:
         model = load_depression_model(checkpoint_path)
-        model_name = "deproberta_finetuned"
+        model_name = "_".join(
+            checkpoint_path.split("/")[-2:]
+        )  # Use last two parts of path as model name
     else:
         model = SentenceTransformer(model_path, trust_remote_code=True)
         model_name = model_path.split("/")[-1]
-
     # Encode all sentences
     embeddings = model.encode(
-        df["doc_text"].tolist(), show_progress_bar=True, batch_size=16, device="cuda"
+        df["sentence"].tolist(),
+        show_progress_bar=True,
+        batch_size=16,
+        device="cuda",
     )
-
     # Load avg questionnaire vectors
     symptom_to_vector = load_avg_questionnaire_vectors(description_folder, model)
+    if output_dir is None:
+        output_dir = "."
 
-    # For each symptom, collect topk closest sentences
-    model_output_dir = os.path.join(output_dir, model_name)
-    os.makedirs(model_output_dir, exist_ok=True)
+    num_clusters = len(symptom_to_vector)
+    print(f"Loaded {num_clusters} symptom avg vectors from {description_folder}")
 
-    for symptom, v in symptom_to_vector.items():
-        dists = np.linalg.norm(embeddings - v, ord=2, axis=1)
-        top_idx = np.argsort(dists)[:topk]
+    symptom_names = list(symptom_to_vector.keys())
+    symptom_vectors = [symptom_to_vector[name] for name in symptom_names]
+
+    # apply k-means clustering
+    labels, cluster_centers, embeddings_norm, centroids_norm = kmeans_clustering(
+        embeddings, symptom_vectors, n_clusters=num_clusters
+    )
+    print("k-means labels:", labels.shape)
+    # map cluster id to symptom
+    cluster_id_to_symptom = {i: symptom for i, symptom in enumerate(symptom_names)}
+
+    # for each cluster, save topk closest sentences to cluster center
+    os.makedirs(f"{output_dir}/kmeans/{model_name}", exist_ok=True)
+
+    for cluster_id in range(num_clusters):
+        symptom = cluster_id_to_symptom[cluster_id]
+        v = cluster_centers[cluster_id]
+        distances = cdist(
+            embeddings_norm, centroids_norm[cluster_id].reshape(1, -1), metric="cosine"
+        ).flatten()
+
+        # Sort by distance (ascending order - smallest distance first)
+        top_idx = np.argsort(distances)[:topk]
+
         rows = [df.iloc[idx] for idx in top_idx]
         out_df = pd.DataFrame(rows)
-        out_df["dist_to_avg"] = dists[top_idx]
-        out_df["similarity"] = 1 - (
-            out_df["dist_to_avg"] / (out_df["dist_to_avg"].max() + 1e-9)
+
+        # Add Minkowski distance scores
+        out_df["minkowski_distance"] = distances[top_idx]
+
+        # Optional: Convert to similarity (e.g., inverse distance)
+        out_df["similarity"] = 1 / (1 + out_df["minkowski_distance"])
+
+        # scale similarity to [0, 1]
+        out_df["similarity"] = (out_df["similarity"] - out_df["similarity"].min()) / (
+            out_df["similarity"].max() - out_df["similarity"].min()
         )
-        out_df[["docid", "doc_text", "similarity"]].to_csv(
-            os.path.join(model_output_dir, f"{symptom}.csv"), index=False
+
+        out_df = out_df.drop_duplicates(subset=[id_column], keep="first").reset_index(
+            drop=True
         )
-        print(f"Saved top {topk} for {symptom} using model {model_name}")
+
+        out_df[
+            [
+                id_column,
+                text_column,
+                "sentence",
+                "minkowski_distance",
+                "similarity",
+                "emotions",
+                # symptom,
+                # f"pred_{symptom}",
+            ]
+        ].to_csv(f"{output_dir}/{model_name}/{symptom}.csv", index=False)
+        print(f"Saved top {len(out_df)} for cluster {cluster_id} ({symptom})")
 
 
-def main():
+def main(data_path, description_folder, output_dir, model_path, topk=5000):
     """Main function to run the kmeans-like sentence collection."""
-    data_path = "data/labels/relevant_predictions.csv"
-    description_folder = "clustering/bdi-questionaire"
-    output_dir = "outputs/symptom_sentences"
-
-    # Run for nomic-embed-text-v1.5
-    find_symptom_sentences(
-        data_path,
-        description_folder,
-        model_path="nomic-ai/nomic-embed-text-v1.5",
-        output_dir=output_dir,
-        topk=5000,
-    )
-
     # Run for modernbert-embed-base
     find_symptom_sentences(
         data_path,
         description_folder,
-        model_path="nomic-ai/modernbert-embed-base",
+        model_path=model_path,
         output_dir=output_dir,
-        topk=5000,
+        topk=topk,
     )
 
 
 if __name__ == "__main__":
-    main()
+    data_path = "data/labels/relevant_predictions.csv"
+    output_dir = "outputs/symptom_sentences"
+
+    # Run for nomic-embed-text-v1.5
+    main(
+        data_path,
+        DESCRIPTION_FOLDER,
+        output_dir,
+        model_path="nomic-ai/nomic-embed-text-v1.5",
+    )
+
+    # run for modernbert-embed-base
+    main(data_path, DESCRIPTION_FOLDER, output_dir, model_path="modernbert-embed-base")
