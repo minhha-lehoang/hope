@@ -2,78 +2,38 @@ import os
 
 import pandas as pd
 
-from utils.constants import *
-
-LIST_METHODS = [
-    "outputs/kmeans_0.1/modernbert-embed-base",
-    "outputs/kmeans_0.1/nomic-embed-text-v1.5",
-]
-
-DISTANCE_METRICS = [
-    "euclidean",
-    "euclidean",
-]
-
-OUTPUT_DIR = "outputs/kmeans_0.1/ensemble"
-
-first_person_pronouns = [
-    "i ",
-    "me",
-    "my",
-    "mine",
-    "myself",
-    "i'm",
-    "i've",
-    "i'll",
-    "i'd",
-    "im ",
-    "am ",
-]
+from utils.constants import LIST_BDI_SYMPTOMS
 
 
-def filtering(text):
-    for pronoun in first_person_pronouns:
-        if pronoun in text.lower():
-            return True
-    return False
+def main(symptom_sentence_dir, output_path, id_column="doc_no"):
+    """
+    Average per-symptom similarity across embedding models (subdirs of
+    symptom_sentence_dir), then merge into one wide CSV:
+    `id` + `<symptom>_similarity` for every BDI symptom. Docs missing from a
+    symptom's top-k get 0.
+    """
+    model_dirs = [
+        os.path.join(symptom_sentence_dir, d)
+        for d in sorted(os.listdir(symptom_sentence_dir))
+        if os.path.isdir(os.path.join(symptom_sentence_dir, d))
+    ]
+    merged = None
+    for symptom in LIST_BDI_SYMPTOMS:
+        dfs = [pd.read_csv(os.path.join(d, f"{symptom}.csv")) for d in model_dirs]
+        sim = (
+            pd.concat(dfs)
+            .groupby(id_column)["similarity"]
+            .mean()
+            .rename(f"{symptom}_similarity")
+            .reset_index()
+        )
+        merged = sim if merged is None else merged.merge(sim, on=id_column, how="outer")
 
-
-def avg_ensemble(symptom):
-    # Read each prediction CSV file into a list of dataframes
-    dfs = []
-    for method, distance in zip(LIST_METHODS, DISTANCE_METRICS):
-        # file_path = os.path.join(method, symptom, f"{distance}.csv")
-        file_path = os.path.join(method, f"{symptom}.csv")
-        print(f"Processing file: {file_path}")
-        df = pd.read_csv(file_path)
-        if "text" in df.columns and "doc_text" not in df.columns:
-            df["doc_text"] = df["text"]
-        df = df[df["doc_text"].apply(filtering)].reset_index(drop=True)
-        df["similarity"] = df["similarity"] / df["similarity"].max()
-        # print(method, symptom, len(df))
-        print(df.head())
-        dfs.append(df)
-
-    # Combine all predictions into one dataframe
-    combined = pd.concat(dfs, ignore_index=True)
-
-    # Group by docid: average similarities, take the first text, and count occurrence per docid
-    grouped = (
-        combined.groupby("docid")
-        .agg(similarity=("similarity", "mean"), text=("doc_text", "first"))
-        .reset_index()
-    )
-
-    # Sort by descending average similarity and take top 1k
-    # result = grouped.sort_values(by="similarity", ascending=False).head(1000)
-    result = grouped.nlargest(5000, "similarity")
-
-    return result
+    merged = merged.fillna(0).rename(columns={id_column: "id"})
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    merged.to_csv(output_path, index=False)
+    print(f"Saved {len(merged)} rows to {output_path}")
 
 
 if __name__ == "__main__":
-    for symptom in LIST_BDI_SYMPTOMS:
-        # # AVG ensemble
-        os.makedirs(f"{OUTPUT_DIR}_avg", exist_ok=True)
-        result = avg_ensemble(symptom)
-        result.to_csv(f"{OUTPUT_DIR}_avg/{symptom}.csv", index=False)
+    main("outputs/symptom_sentences", "outputs/unsupervised_preds.csv")

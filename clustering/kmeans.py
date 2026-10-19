@@ -9,8 +9,7 @@ from sentence_transformers import SentenceTransformer
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from data_processing.text_preprocess import sentence_segmentation
-from utils.constants import (CHECKPOINT_PATH, DESCRIPTION_FOLDER,
-                             RELEVANT_THRESHOLD)
+from utils.constants import CHECKPOINT_PATH, DESCRIPTION_FOLDER, RELEVANT_THRESHOLD
 
 
 def load_avg_questionnaire_vectors(description_folder, model):
@@ -131,14 +130,14 @@ def find_symptom_sentences(
     use_depression_model=False,
     checkpoint_path=CHECKPOINT_PATH,
     output_dir=None,
-    id_column="sentence_id",
-    text_column="text",
+    id_column="doc_no",
+    text_column="doc_text",
 ):
     # Load data
     df = pd.read_csv(data_path)
 
     # filter out rows with  no value >= rel_thres
-    pred_cols = [col for col in df.columns if col.startswith("pred_")]
+    pred_cols = [col for col in df.columns if col.startswith(("pred_", "query_"))]
     df = df[df[pred_cols].gt(rel_thres).any(axis=1)].reset_index(drop=True)
     print(f"Filtered to {len(df)} texts with rel_thres > {rel_thres}")
 
@@ -183,7 +182,7 @@ def find_symptom_sentences(
     cluster_id_to_symptom = {i: symptom for i, symptom in enumerate(symptom_names)}
 
     # for each cluster, save topk closest sentences to cluster center
-    os.makedirs(f"{output_dir}/kmeans/{model_name}", exist_ok=True)
+    os.makedirs(f"{output_dir}/{model_name}", exist_ok=True)
 
     for cluster_id in range(num_clusters):
         symptom = cluster_id_to_symptom[cluster_id]
@@ -220,9 +219,6 @@ def find_symptom_sentences(
                 "sentence",
                 "minkowski_distance",
                 "similarity",
-                "emotions",
-                # symptom,
-                # f"pred_{symptom}",
             ]
         ].to_csv(f"{output_dir}/{model_name}/{symptom}.csv", index=False)
         print(f"Saved top {len(out_df)} for cluster {cluster_id} ({symptom})")
