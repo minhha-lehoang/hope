@@ -46,7 +46,7 @@ def infer(model, tokenizer, texts, batch_size=32, device="cuda"):
                 batch_texts,
                 padding=True,  # Dynamic padding instead of max_length
                 truncation=True,
-                max_length=128,
+                max_length=256,
                 return_tensors="pt",
             )
 
