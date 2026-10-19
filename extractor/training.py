@@ -33,10 +33,10 @@ def prepare_dataset(data_dir, id_column="doc_id", text_column="text"):
     data_23 = pd.read_csv(os.path.join(data_dir, "erisk2023_majority.csv"))
     data_24 = pd.read_csv(os.path.join(data_dir, "erisk2024_majority.csv"))
 
-    val_df = data_24.sample(int(len(data_24) * 0.2), random_state=SEED)
-    train_df = pd.concat(
-        [data_23, data_24[~data_24["doc_id"].isin(val_df["doc_id"])]]
-    ).reset_index(drop=True)
+    # 90/10 train/val split over the pooled 2023 + 2024 labeled data
+    data = pd.concat([data_23, data_24]).reset_index(drop=True)
+    val_df = data.sample(frac=0.1, random_state=SEED)
+    train_df = data.drop(val_df.index).reset_index(drop=True)
 
     train_df = preprocess(train_df, id_column=id_column, text_column=text_column)
     val_df = preprocess(val_df, id_column=id_column, text_column=text_column)
