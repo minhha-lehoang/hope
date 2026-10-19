@@ -4,8 +4,28 @@ import pandas as pd
 
 from utils.constants import LIST_BDI_SYMPTOMS
 
+# substring match, as in the original submission (so "me" also hits "some")
+FIRST_PERSON = (
+    "i ",
+    "me",
+    "my",
+    "mine",
+    "myself",
+    "i'm",
+    "i've",
+    "i'll",
+    "i'd",
+    "im ",
+    "am ",
+)
 
-def main(symptom_sentence_dir, output_path, id_column="doc_no"):
+
+def has_first_person(text):
+    text = str(text).lower()
+    return any(p in text for p in FIRST_PERSON)
+
+
+def main(symptom_sentence_dir, output_path, id_column="doc_no", first_person_only=True):
     """
     Average per-symptom similarity across embedding models (subdirs of
     symptom_sentence_dir), then merge into one wide CSV:
@@ -20,6 +40,8 @@ def main(symptom_sentence_dir, output_path, id_column="doc_no"):
     merged = None
     for symptom in LIST_BDI_SYMPTOMS:
         dfs = [pd.read_csv(os.path.join(d, f"{symptom}.csv")) for d in model_dirs]
+        if first_person_only:
+            dfs = [df[df["sentence"].apply(has_first_person)] for df in dfs]
         sim = (
             pd.concat(dfs)
             .groupby(id_column)["similarity"]

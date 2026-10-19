@@ -118,7 +118,7 @@ def kmeans_clustering(embeddings, questionnaire_symptom_vectors, n_clusters=10):
         n_clusters=n_clusters, init=centroids_norm, n_init=1
     )  # n_init=1 to use provided init
     kmeans.fit(embeddings_norm)
-    return kmeans.labels_, kmeans.cluster_centers_, embeddings_norm, centroids_norm
+    return kmeans.labels_, kmeans.cluster_centers_, embeddings_norm
 
 
 def find_symptom_sentences(
@@ -174,7 +174,7 @@ def find_symptom_sentences(
     symptom_vectors = [symptom_to_vector[name] for name in symptom_names]
 
     # apply k-means clustering
-    labels, cluster_centers, embeddings_norm, centroids_norm = kmeans_clustering(
+    labels, cluster_centers, embeddings_norm = kmeans_clustering(
         embeddings, symptom_vectors, n_clusters=num_clusters
     )
     print("k-means labels:", labels.shape)
@@ -186,9 +186,8 @@ def find_symptom_sentences(
 
     for cluster_id in range(num_clusters):
         symptom = cluster_id_to_symptom[cluster_id]
-        v = cluster_centers[cluster_id]
         distances = cdist(
-            embeddings_norm, centroids_norm[cluster_id].reshape(1, -1), metric="cosine"
+            embeddings_norm, cluster_centers[cluster_id].reshape(1, -1), metric="cosine"
         ).flatten()
 
         # Sort by distance (ascending order - smallest distance first)
